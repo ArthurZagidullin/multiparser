@@ -17,5 +17,4 @@ func main()  {
 	}
 	log.Printf("Config: %+v ", cfg)
 
-
 }
