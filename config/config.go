@@ -3,12 +3,18 @@ package config
 import (
 	"fmt"
 	"gopkg.in/yaml.v2"
+	amazonConfig "multiparser/provider/amazon/config"
 	"os"
 )
 
 type Config struct {
-	CommandList string `yaml:"commandlist"`
-	PackLimit   int    `yaml:"packlimit"`
+	Common struct {
+		CommandList string `yaml:"commandlist"`
+		PackLimit   int    `yaml:"packlimit"`
+	}
+	Providers struct {
+		Amazon amazonConfig.Amazon
+	}
 }
 
 func (c *Config) Load(fn string) error {

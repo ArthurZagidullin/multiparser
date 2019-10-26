@@ -1,3 +1,5 @@
 .idea
 config.yaml
 multiparser
+config/accessKeys.csv
+config/awsMultiParser-kp.pem
