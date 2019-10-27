@@ -2,17 +2,17 @@ package provider
 
 import (
 	"fmt"
-	"os/exec"
+	"sync"
 )
 
 // Instance среда выполнение ssh команд
 type Instance interface {
 	fmt.Stringer
-	Execute(cmd *exec.Cmd) ([]byte, error)
+	Execute(wg *sync.WaitGroup, cmd string) ([]byte, error)
 }
 
 // Provider задача подготовить instance
 type Provider interface {
-	GetInstance() <- chan  Instance
+	GetInstance() <-chan Instance
 	Run()
 }

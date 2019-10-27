@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"log"
 	"multiparser/config"
 	"multiparser/provider/amazon"
-	"os/exec"
+	"os"
+	"sync"
 )
 
 //1. Принять список
@@ -19,39 +22,69 @@ func main() {
 		panic(err)
 	}
 
-	//pvd := local.NewProvider()
-	//go pvd.Run()
-	//
-	//inst := <-pvd.GetInstance()
-	//log.Printf("%s", inst)
-	//
-	//res, err := inst.Execute(exec.Command("ls", "-l", "-1"))
-	//if err != nil {
-	//	log.Fatalf("Execute command in Instance: %s", err)
-	//}
-	//log.Printf("Execute result: %s ", res)
-
-	amazoncfg := cfg.Providers.Amazon
-
-	pvd := amazon.NewProvider(amazoncfg)
+	storage := &bytes.Buffer{}
+	pvd := amazon.NewProvider(cfg.Providers.Amazon, cfg.Providers.Amazon.Instance.SecurityGroups.KeyPair, storage)
 	go pvd.Run()
 
-	inst := <-pvd.GetInstance()
-
-	fmt.Printf("\n%s\n", inst)
-
-	cmd := exec.Command("ssh", "-o \"StrictHostKeyChecking=no\"","-i" + amazoncfg.Instance.SecurityGroups.KeyPair)
-
-	res, err := inst.Execute(cmd)
+	iplist, err := readLines(cfg.Common.Iplist)
 	if err != nil {
-		log.Println(err)
+		log.Fatal(err)
 	}
 
-	fmt.Printf("\nResutlt: %s \n", res)
+	wg := &sync.WaitGroup{}
+	for _, ippack := range dividePack(iplist, cfg.Common.PackLimit) {
+		fmt.Printf("IP Pack: %v\n", ippack)
+		wg.Add(1)
+		go func(wg *sync.WaitGroup, pack []string) {
+			defer wg.Done()
+			wgcmd := &sync.WaitGroup{}
+			inst := <-pvd.GetInstance()
+			for _, ip := range pack {
+				wgcmd.Add(1)
+				go func(wgcmd *sync.WaitGroup, ip string) {
+					b, err := inst.Execute(wgcmd, "nmap -F "+ip)
+					if  err != nil {
+						log.Printf("Error: %s ", err)
+						return
+					}
+					fmt.Printf("\nResult %s:\n %s", ip, b)
+				}(wgcmd, ip)
+			}
+			wgcmd.Wait()
+		}(wg, ippack)
+	}
 
-	//inst.Execute(exec.Command())
-	//
-	//inst := pvd.GetInstance()
-	//test()
-	fmt.Scanln()
+	wg.Wait()
+	fmt.Printf("\n-------------\nStorage Result: %s \n", storage.String())
+}
+
+func dividePack(slice []string, size int) [][]string {
+	var divided [][]string
+
+	for i := 0; i < len(slice); i += size {
+		end := i + size
+
+		if end > len(slice) {
+			end = len(slice)
+		}
+
+		divided = append(divided, slice[i:end])
+	}
+
+	return divided
+}
+
+func readLines(path string) ([]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var lines []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	return lines, scanner.Err()
 }

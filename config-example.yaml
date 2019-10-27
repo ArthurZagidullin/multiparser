@@ -1,0 +1,15 @@
+common:
+  iplist: "./iplist"
+  packlimit: 5
+providers:
+  amazon:
+    region: "eu-central-1"
+    id_key: "aws-id-key"
+    secret_key: "aws-secret-key"
+    instance:
+      prefix_name: "mp"
+      image_id: "ami-03226bf91092b90b4"
+      type: "t2.nano"
+      security_groups:
+        id: "security-group-id"
+        key_pair: "./config/awsMultiParser-kp.pem"

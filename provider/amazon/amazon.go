@@ -7,25 +7,45 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"golang.org/x/crypto/ssh"
+	"io/ioutil"
 	"log"
 	"multiparser/provider"
 	amazonConfig "multiparser/provider/amazon/config"
-	"os/exec"
+	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
-
 type Provider struct {
-	sess *session.Session
+	config    amazonConfig.Amazon
+	sshconfig *ssh.ClientConfig
+	sess      *session.Session
+	buf       *bytes.Buffer
 	// EC2 service client
-	svc *ec2.EC2
-	config amazonConfig.Amazon
-
+	svc                 *ec2.EC2
 	waitInstanceRequest chan (chan<- provider.Instance)
 }
 
-func NewProvider(config amazonConfig.Amazon) *Provider {
+func NewProvider(config amazonConfig.Amazon, keypair string, buf *bytes.Buffer) *Provider {
+	pkdata, err := ioutil.ReadFile(keypair)
+	if err != nil {
+		log.Fatal(err)
+	}
+	pkey, err := ssh.ParsePrivateKey(pkdata)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	sshconf := &ssh.ClientConfig{
+		User:            "ec2-user",
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(pkey),
+		},
+	}
+
 	sess, err := session.NewSession(&aws.Config{
 		Region:      aws.String(config.Region),
 		Credentials: credentials.NewStaticCredentials(config.IdKey, config.SecretKey, ""),
@@ -34,9 +54,11 @@ func NewProvider(config amazonConfig.Amazon) *Provider {
 		log.Fatalf("NewProvider: Create session: %v", err)
 	}
 	return &Provider{
-		sess: sess,
-		config: config,
-		svc: ec2.New(sess),
+		buf:                 buf,
+		sess:                sess,
+		sshconfig:           sshconf,
+		config:              config,
+		svc:                 ec2.New(sess),
 		waitInstanceRequest: make(chan (chan<- provider.Instance), 1),
 	}
 }
@@ -46,7 +68,7 @@ func (p *Provider) statusCheck(instance *ec2.Instance) bool {
 		InstanceIds: []*string{instance.InstanceId},
 	})
 	if err != nil {
-		log.Printf("statusCheck: error %s", err )
+		log.Printf("statusCheck: error %s", err)
 		return false
 	}
 	if len(statusResp.InstanceStatuses) == 0 {
@@ -67,10 +89,10 @@ func (p *Provider) runEC2Instance() *ec2.Instance {
 
 	// Run Instance
 	runResult, err := svc.RunInstances(&ec2.RunInstancesInput{
-		ImageId:      aws.String(config.ImageID),
-		InstanceType: aws.String(config.Type),
-		MinCount:     aws.Int64(1),
-		MaxCount:     aws.Int64(1),
+		ImageId:          aws.String(config.ImageID),
+		InstanceType:     aws.String(config.Type),
+		MinCount:         aws.Int64(1),
+		MaxCount:         aws.Int64(1),
 		SecurityGroupIds: aws.StringSlice([]string{config.SecurityGroups.Id}),
 	})
 	if err != nil {
@@ -100,7 +122,7 @@ func (p *Provider) runEC2Instance() *ec2.Instance {
 	return instance
 }
 
-func (p *Provider) GetInstance() <- chan provider.Instance {
+func (p *Provider) GetInstance() <-chan provider.Instance {
 	ch := make(chan provider.Instance)
 	p.waitInstanceRequest <- ch
 	return ch
@@ -117,14 +139,15 @@ func (p *Provider) Run() {
 				time.Sleep(5 * time.Second)
 				// TODO: timeout
 				if p.statusCheck(ec2instance) {
-					out, _ := p.svc.DescribeInstances(&ec2.DescribeInstancesInput{InstanceIds:[]*string{ec2instance.InstanceId}})
+					out, _ := p.svc.DescribeInstances(&ec2.DescribeInstancesInput{InstanceIds: []*string{ec2instance.InstanceId}})
 					// TODO: not safe
 					res := out.Reservations[0].Instances[0]
-					//out.
 					r <- &Instance{
-						PublicIP: *res.PublicIpAddress,
+						buf:       p.buf,
+						PublicIP:  *res.PublicIpAddress,
+						sshconfig: p.sshconfig,
 						PublicDNS: *res.PublicDnsName,
-						I: ec2instance,
+						I:         ec2instance,
 					}
 					return
 				}
@@ -134,29 +157,39 @@ func (p *Provider) Run() {
 	}
 }
 
-
 type Instance struct {
+	buf                 *bytes.Buffer
+	sshconfig *ssh.ClientConfig
 	PublicIP, PublicDNS string
-	I *ec2.Instance
+	I                   *ec2.Instance
 }
 
 func (i Instance) String() string {
 	return i.I.String()
 }
 
-func (i *Instance) Execute(cmd *exec.Cmd) ([]byte, error) {
-	//cmd.
-	buf := &bytes.Buffer{}
-	cmd.Stdout = buf
+func (i *Instance) Execute(wg *sync.WaitGroup, cmd string) ([]byte, error) {
+	defer wg.Done()
 
-	//exec.Command("ssh","-i" + amazoncfg.Instance.SecurityGroups.KeyPair,)
-	sshpath := fmt.Sprintf("ec2-user@%s", i.PublicIP, )
-	cmd.Args = append(cmd.Args, sshpath, "pwd")
+	b := &bytes.Buffer{}
 
-	log.Printf("Execute: %s", strings.Join(cmd.Args, " "))
-
-	if err := cmd.Run(); err != nil {
+	client, err := ssh.Dial("tcp", net.JoinHostPort(i.PublicIP, "22"), i.sshconfig)
+	if err != nil {
 		return nil, fmt.Errorf("Execute: %s ", err)
 	}
-	return buf.Bytes(), nil
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("Execute: %s ", err)
+	}
+	defer sess.Close()
+
+	sess.Stdout = b
+	log.Printf("Execute: instance %s; run cmd: %s ", *i.I.InstanceId, cmd)
+
+	if err = sess.Run(cmd); err != nil {
+		return nil, fmt.Errorf("Execute: %s ", err)
+	}
+	return b.Bytes(), nil
 }

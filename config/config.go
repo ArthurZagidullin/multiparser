@@ -9,8 +9,8 @@ import (
 
 type Config struct {
 	Common struct {
-		CommandList string `yaml:"commandlist"`
-		PackLimit   int    `yaml:"packlimit"`
+		Iplist    string `yaml:"iplist"`
+		PackLimit int    `yaml:"packlimit"`
 	}
 	Providers struct {
 		Amazon amazonConfig.Amazon
